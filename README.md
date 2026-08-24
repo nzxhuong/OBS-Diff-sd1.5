@@ -1,3 +1,6 @@
+For calibration, we use the first 100 prompts from GCC3M.
+
+
 <div align="center">
 <p align="center">
   <img src="figures/obs-diff-logo.jpg" alt="OBS-Diff Logo" width="30%">

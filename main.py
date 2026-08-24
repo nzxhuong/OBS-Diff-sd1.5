@@ -2,8 +2,11 @@ import argparse
 import os 
 import numpy as np
 import torch
-from lib.prune import prune_OBS_Diff, prune_OBS_Diff_Structured, check_sparsity, check_size
-from diffusers import StableDiffusion3Pipeline
+from lib.prune import prune_OBS_Diff, check_sparsity, check_size
+from lib.prune_sd15 import prune_OBS_Diff_Structured_SD15
+from diffusers import StableDiffusionPipeline
+from lib.unet_blocks import enumerate_unet_blocks
+from lib.prune_sd15 import prune_OBS_Diff_Structured_SD15
 
 def main():
     parser = argparse.ArgumentParser()
@@ -48,47 +51,38 @@ def main():
    
     
     print(f"loading model {args.model_path}")
-    pipe = StableDiffusion3Pipeline.from_pretrained(
+    pipe = StableDiffusionPipeline.from_single_file(
         args.model_path,
         torch_dtype=torch.float16
     ).to("cuda")
-    pipe.transformer.eval()
+    pipe.unet.eval()
 
-    if args.minlayer is not None and args.maxlayer is not None:
-        args.minlayer = max(args.minlayer, 0)
-        args.maxlayer = min(args.maxlayer, pipe.transformer.config.num_layers)
-    elif args.minlayer is not None:
-        args.minlayer = max(args.minlayer, 0)
-        args.maxlayer = pipe.transformer.config.num_layers
-    elif args.maxlayer is not None:
-        args.maxlayer = min(args.maxlayer, pipe.transformer.config.num_layers)
+    # if args.minlayer is not None and args.maxlayer is not None:
+    #     args.minlayer = max(args.minlayer, 0)
+    #     args.maxlayer = min(args.maxlayer, pipe.transformer.config.num_layers)
+    # elif args.minlayer is not None:
+    #     args.minlayer = max(args.minlayer, 0)
+    #     args.maxlayer = pipe.transformer.config.num_layers
+    # elif args.maxlayer is not None:
+    #     args.maxlayer = min(args.maxlayer, pipe.transformer.config.num_layers)
+    #     args.minlayer = 0
+    # else:
+    #     args.minlayer = 0
+    #     args.maxlayer = pipe.transformer.config.num_layers
+    num_blocks = len(enumerate_unet_blocks(pipe.unet))
+    print(f"UNet has {num_blocks} prunable blocks total")
+
+    if args.minlayer is None:
         args.minlayer = 0
-    else:
-        args.minlayer = 0
-        args.maxlayer = pipe.transformer.config.num_layers
-    
-    # To ensure the last layer is not pruned (we prune the complete MMDiT layers in structured pruning)
-    if args.sparsity_type == "structured":
-        if args.maxlayer == pipe.transformer.config.num_layers:
-            args.maxlayer = pipe.transformer.config.num_layers - 1
+    if args.maxlayer is None:
+        args.maxlayer = num_blocks
+
+    # # To ensure the last layer is not pruned (we prune the complete MMDiT layers in structured pruning)
     print(f"pruning from layer {args.minlayer} to {args.maxlayer}")
     print(f"use device {device}")
 
    
-    target_modules = [
-            "ff.net.2",
-            "ff_context.net.2",
-            "ff_context.net.0.proj",
-            "ff.net.0.proj",
-            "attn.to_q",
-            "attn.to_k",
-            "attn.to_v",
-            "attn.to_out.0",
-            "attn.add_k_proj",
-            "attn.add_q_proj",
-            "attn.add_v_proj",
-            "attn.to_add_out",
-        ]
+    target_modules = ["attn1.to_out.0", "attn2.to_out.0", "ff.net.2"]
 
     if args.sparsity_type == "structured":
 
@@ -140,14 +134,20 @@ def main():
 
             print(f"timestep_weight: {timestep_weight}")
 
-            prune_OBS_Diff_Structured(args, pipe, target_modules, device, timestep_weight=timestep_weight)
+            prune_OBS_Diff_Structured_SD15(args, pipe, device, timestep_weight=timestep_weight)
+    if args.sparsity_type == "structured":
+        prune_OBS_Diff_Structured_SD15(args, pipe, device, timestep_weight=timestep_weight)
+        # if args.maxlayer == pipe.transformer.config.num_layers:
+        #     args.maxlayer = pipe.transformer.config.num_layers - 1
 
     if args.sparsity_type != "structured":
-        sparsity_ratio = check_sparsity(pipe.transformer, target_modules)
+        # sparsity_ratio = check_sparsity(pipe.transformer, target_modules)
+        sparsity_ratio = check_sparsity(pipe.uniet, target_modules)
+
         print(f"sparsity sanity check {sparsity_ratio:.4f}")
     if args.sparsity_type == "structured":
-        check_size(pipe.transformer, target_modules)
-   
+        # check_size(pipe.transformer, target_modules)
+        check_size(pipe.unet, target_modules)
     if args.demo_evaluate:
         height = 1024
         width = 1024
@@ -169,7 +169,7 @@ def main():
     if args.save_model:
         os.makedirs(args.save_model, exist_ok=True)
         args.save_model = args.save_model + "/pruned_model.pth"
-        torch.save(pipe.transformer, args.save_model)
+        torch.save(pipe.unet, args.save_model) 
         print(f"save model to {args.save_model}")
 
 if __name__ == '__main__':
