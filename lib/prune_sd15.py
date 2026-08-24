@@ -183,14 +183,30 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
             )
 
             if module_name == "ff.net.2":
-                idx = pruner_dict[(block_key, module_name)].struct_prune(
-                    sparsity=sparsity, percdamp=args.percdamp
-                )
+                pruner = pruner_dict[(block_key, module_name)]
+                idx = pruner.struct_prune(sparsity=sparsity, percdamp=args.percdamp)
+                inner_dim = pruner.columns  # ff.net.2's original in_features
+
                 target_layer = get_module_by_name(block_module, "ff.net.2")
                 target_layer_in = get_module_by_name(block_module, "ff.net.0.proj")
                 idx = idx.tolist()
+
+                # GEGLU: ff.net.0.proj outputs concat([hidden, gate]), each of
+                # size inner_dim (out_features == 2*inner_dim), then does
+                # hidden * gelu(gate) via chunk(2). An inner_dim-space pruned
+                # index i must remove BOTH proj output channel i (hidden half)
+                # and i + inner_dim (gate half), or the chunk split misaligns
+                # after pruning. Non-gated activations (e.g. gelu-approximate,
+                # used by SD3's FeedForward) have proj.out_features == inner_dim
+                # and don't need this doubling.
+                proj_out_features = target_layer_in.out_features
+                if proj_out_features == 2 * inner_dim:
+                    full_idx = idx + [i + inner_dim for i in idx]
+                else:
+                    full_idx = idx
+
                 tp.prune_linear_in_channels(target_layer, idx)
-                tp.prune_linear_out_channels(target_layer_in, idx)
+                tp.prune_linear_out_channels(target_layer_in, full_idx)
 
             else:  # "attn1.to_out.0" or "attn2.to_out.0"
                 attn_name = module_name.split(".")[0]  # "attn1" or "attn2"
