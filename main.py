@@ -54,7 +54,7 @@ def main():
         args.model_path,
         torch_dtype=torch.float16
     ).to("cuda")
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, algorithm_type="sde-dpmsolver++", use_karras_sigmas=True)
 
     pipe.unet.eval()
 
