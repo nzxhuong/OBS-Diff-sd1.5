@@ -201,7 +201,8 @@ def group_modules_with_parallelism(target_pruned_modules, num_groups):
 
 def create_hook_fn(block_idx, layer_name, pruner_dict, timestep_weight):
     def hook_fn(module, input, output):
-        step = step_info["current"]
+        step = min(step_info["current"], len(timestep_weight) - 1)
+
         pruner = pruner_dict[(block_idx, layer_name)]
         
         # get the input data

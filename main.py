@@ -7,6 +7,7 @@ from lib.prune_sd15 import prune_OBS_Diff_Structured_SD15
 from diffusers import StableDiffusionPipeline
 from lib.unet_blocks import enumerate_unet_blocks
 from lib.prune_sd15 import prune_OBS_Diff_Structured_SD15
+from diffusers import DPMSolverMultistepScheduler
 
 def main():
     parser = argparse.ArgumentParser()
@@ -55,6 +56,8 @@ def main():
         args.model_path,
         torch_dtype=torch.float16
     ).to("cuda")
+    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+
     pipe.unet.eval()
 
     # if args.minlayer is not None and args.maxlayer is not None:
