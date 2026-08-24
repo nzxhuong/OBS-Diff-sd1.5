@@ -4,10 +4,8 @@ import numpy as np
 import torch
 from lib.prune import prune_OBS_Diff, check_sparsity, check_size
 from lib.prune_sd15 import prune_OBS_Diff_Structured_SD15
-from diffusers import StableDiffusionPipeline
 from lib.unet_blocks import enumerate_unet_blocks
-from lib.prune_sd15 import prune_OBS_Diff_Structured_SD15
-from diffusers import DPMSolverMultistepScheduler
+from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 
 def main():
     parser = argparse.ArgumentParser()
@@ -88,12 +86,7 @@ def main():
     target_modules = ["attn1.to_out.0", "attn2.to_out.0", "ff.net.2"]
 
     if args.sparsity_type == "structured":
-
-        target_modules = [
-            "ff.net.2",
-            "ff_context.net.2",
-            "attn.to_out.0"
-        ]
+        target_modules = ["ff.net.2", "attn1.to_out.0", "attn2.to_out.0"]
 
     if args.sparsity_ratio != 0:
         print("pruning starts")
@@ -138,31 +131,21 @@ def main():
             print(f"timestep_weight: {timestep_weight}")
 
             prune_OBS_Diff_Structured_SD15(args, pipe, device, timestep_weight=timestep_weight)
-    if args.sparsity_type == "structured":
-        prune_OBS_Diff_Structured_SD15(args, pipe, device, timestep_weight=timestep_weight)
-        # if args.maxlayer == pipe.transformer.config.num_layers:
-        #     args.maxlayer = pipe.transformer.config.num_layers - 1
 
     if args.sparsity_type != "structured":
-        # sparsity_ratio = check_sparsity(pipe.transformer, target_modules)
-        sparsity_ratio = check_sparsity(pipe.uniet, target_modules)
+        sparsity_ratio = check_sparsity(pipe.unet, target_modules)
 
         print(f"sparsity sanity check {sparsity_ratio:.4f}")
     if args.sparsity_type == "structured":
         # check_size(pipe.transformer, target_modules)
         check_size(pipe.unet, target_modules)
     if args.demo_evaluate:
-        height = 1024
-        width = 1024
-        num_inference_steps = 25
-        guidance_scale = 7.0
-        
         image = pipe(
             prompt="A cat holding a sign that says hello world",
-            height=height,
-            width=width,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
+            height=args.height,
+            width=args.width,
+            num_inference_steps=args.num_inference_steps,
+            guidance_scale=args.guidance_scale,
             generator=torch.Generator("cuda").manual_seed(0)
         ).images[0] 
         os.makedirs("./eval_output", exist_ok=True)
