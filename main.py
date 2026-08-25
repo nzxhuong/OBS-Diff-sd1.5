@@ -2,8 +2,8 @@ import argparse
 import os 
 import numpy as np
 import torch
-from lib.prune import prune_OBS_Diff, check_sparsity, check_size
-from lib.prune_sd15 import prune_OBS_Diff_Structured_SD15
+from lib.prune import check_sparsity, check_size
+from lib.prune_sd15 import prune_OBS_Diff_SD15, prune_OBS_Diff_Structured_SD15
 from lib.unet_blocks import enumerate_unet_blocks
 from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 
@@ -56,9 +56,10 @@ def main():
         torch_dtype=torch.float16
     ).to("cuda")
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, algorithm_type="sde-dpmsolver++", use_karras_sigmas=True)
-    pipe.load_textual_inversion(
-        args.neg_embedding_path,
-        token="CyberRealistic_Negative",   
+    if args.neg_embedding_path:
+        pipe.load_textual_inversion(
+            args.neg_embedding_path,
+            token="CyberRealistic_Negative",
         )
     pipe.unet.eval()
 
@@ -87,7 +88,11 @@ def main():
     print(f"use device {device}")
 
    
-    target_modules = ["attn1.to_out.0", "attn2.to_out.0", "ff.net.2"]
+    target_modules = [
+        "attn1.to_q", "attn1.to_k", "attn1.to_v", "attn1.to_out.0",
+        "attn2.to_q", "attn2.to_k", "attn2.to_v", "attn2.to_out.0",
+        "ff.net.0.proj", "ff.net.2",
+    ]
 
     if args.sparsity_type == "structured":
         target_modules = ["ff.net.2", "attn1.to_out.0", "attn2.to_out.0"]
@@ -113,7 +118,7 @@ def main():
 
             print(f"timestep_weight: {timestep_weight}")
 
-            prune_OBS_Diff(args, pipe, target_modules, device, prune_n=prune_n, prune_m=prune_m, timestep_weight=timestep_weight)
+            prune_OBS_Diff_SD15(args, pipe, device, prune_n=prune_n, prune_m=prune_m, timestep_weight=timestep_weight)
         
        
         elif args.prune_method == "OBS-Diff-Structured":
