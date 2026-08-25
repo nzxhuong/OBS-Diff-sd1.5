@@ -22,6 +22,7 @@ import torch_pruning as tp
 from collections import defaultdict
 
 from .unet_blocks import build_block_registry, build_target_pruned_modules, find_layers
+from .OBS_Diff import OBS_Diff
 from .OBS_Diff_Structured import OBS_Diff_Structured
 from .dataloader import get_loaders
 
@@ -232,6 +233,109 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
                 attn_module.heads -= len(idx) // head_dim
                 print(f"[{block_key}.{attn_name}] heads {prev_heads} -> {attn_module.heads}")
 
+            pruner_dict[(block_key, module_name)].free()
+
+        torch.cuda.empty_cache()
+        print(f"Group {g_idx + 1} pruning completed.")
+
+
+# ---------------------------------------------------------------------------
+# 4. Unstructured / N:M pruning driver
+# ---------------------------------------------------------------------------
+# Simpler than the structured path: OBS zeros individual weights in place
+# rather than removing whole channels, so there's no torch_pruning dependency
+# graph, no GEGLU channel-alignment issue, and every target module is
+# Hessian-tracked and pruned directly -- no separate "paired layer" pruned by
+# index propagation. Target modules here are the full set of Linear layers
+# you want sparsified, not just the three structural anchor points.
+SD15_UNSTRUCTURED_TARGETS = [
+    "attn1.to_q", "attn1.to_k", "attn1.to_v", "attn1.to_out.0",
+    "attn2.to_q", "attn2.to_k", "attn2.to_v", "attn2.to_out.0",
+    "ff.net.0.proj", "ff.net.2",
+]
+
+
+@torch.no_grad()
+def prune_OBS_Diff_SD15(args, pipe, dev, prune_n=0, prune_m=0, timestep_weight=None):
+    """
+    SD1.5 adaptation of prune_OBS_Diff from lib/prune.py. Every module in
+    SD15_UNSTRUCTURED_TARGETS is hooked, Hessian-tracked, and pruned directly
+    via OBS_Diff.fasterprune -- no channel removal, no dependency wiring.
+    """
+    print('Starting SD1.5 unstructured pruning...')
+    dataloader = get_loaders(args.dataset, num_samples=args.num_samples)
+
+    unet = pipe.unet
+    registry = build_block_registry(unet)
+
+    target_pruned_modules = build_target_pruned_modules(
+        unet, SD15_UNSTRUCTURED_TARGETS, args.minlayer, args.maxlayer
+    )
+
+    print(f"registry has {len(registry)} blocks, "
+          f"{len(target_pruned_modules)} target modules found")
+
+    # Grouping here is purely to batch calibration forward passes; unlike the
+    # structured path there's no dependency-linked "paired layer" to worry
+    # about, so grouping by the same SD15_PARALLEL_SETS is fine, or you can
+    # just pass num_pruned_groups == len(target_pruned_modules) for one
+    # module per group if you'd rather keep it simple.
+    modules_groups = group_modules_with_parallelism_sd15(
+        target_pruned_modules, args.num_pruned_groups
+    )
+    print(f"divided into {len(modules_groups)} groups")
+    for g_idx, group in enumerate(modules_groups):
+        print(f"Group {g_idx + 1}: {group}")
+
+    for g_idx, group_modules in enumerate(modules_groups):
+        print(f"\nProcessing group {g_idx + 1}/{len(modules_groups)}...")
+
+        pruner_dict = {}
+        hooks = []
+        for block_key, module_name in group_modules:
+            block_module = registry[block_key]
+            all_module_dict = find_layers(block_module)
+            module = all_module_dict[module_name]
+
+            pruner_dict[(block_key, module_name)] = OBS_Diff(module, args)
+            hook_fn = create_hook_fn(block_key, module_name, pruner_dict, timestep_weight)
+            hooks.append(module.register_forward_hook(hook_fn))
+
+        print(f"Running diffusion for group {g_idx + 1} to collect activations...")
+        batch_size = args.batch_size
+        num_batches = (len(dataloader) + batch_size - 1) // batch_size
+        for i in range(num_batches):
+            prompts = dataloader[i * batch_size:(i + 1) * batch_size]
+            print(f"  Prompts {i}: {prompts}")
+            step_info["current"] = 0
+            pipe(
+                prompt=prompts,
+                height=args.height,
+                width=args.width,
+                num_inference_steps=args.num_inference_steps,
+                guidance_scale=args.guidance_scale,
+                callback_on_step_end=callback_on_step_end,
+                callback_on_step_end_tensor_inputs=["latents"],
+                generator=torch.Generator("cuda").manual_seed(args.seed),
+            )
+
+        for hook in hooks:
+            hook.remove()
+
+        print(f"Pruning group {g_idx + 1}...")
+        for block_key, module_name in group_modules:
+            sparsity = (
+                args.sparsity_ratio[block_key]
+                if isinstance(args.sparsity_ratio, dict)
+                else args.sparsity_ratio
+            )
+            print(f"Pruning {block_key}.{module_name} at sparsity {sparsity}")
+            pruner_dict[(block_key, module_name)].fasterprune(
+                sparsity=sparsity,
+                percdamp=args.percdamp,
+                prunen=prune_n,
+                prunem=prune_m,
+            )
             pruner_dict[(block_key, module_name)].free()
 
         torch.cuda.empty_cache()
