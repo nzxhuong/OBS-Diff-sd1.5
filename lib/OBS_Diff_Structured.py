@@ -38,14 +38,31 @@ class OBS_Diff_Structured(object):
         if DEBUG:
             self.inp1 = inp
             self.out1 = out
-        if len(inp.shape) == 2:
-            inp = inp.unsqueeze(0)
-        tmp = inp.shape[0]
-        if isinstance(self.layer, nn.Linear) or isinstance(self.layer, transformers.Conv1D):
+        if isinstance(self.layer, nn.Conv2d):
+            # inp arrives as [B, C_in, H, W] from the forward hook. Unfold
+            # (im2col) turns every convolution window into one column of
+            # length C_in*kH*kW, matching self.layer.weight.flatten(1)'s
+            # column order exactly (both iterate C_in, then kH, then kW),
+            # so this becomes the identical X X^T reconstruction problem
+            # already solved for Linear layers below -- no other code in
+            # struct_prune needs to know it's looking at a conv.
             if len(inp.shape) == 3:
-                inp = inp.reshape((-1, inp.shape[-1]))
-            inp = inp.t()
-
+                inp = inp.unsqueeze(0)
+            unfold = nn.Unfold(
+                kernel_size=self.layer.kernel_size,
+                dilation=self.layer.dilation,
+                padding=self.layer.padding,
+                stride=self.layer.stride,
+            )
+            patches = unfold(inp)                      # [B, C_in*kH*kW, L]
+            inp = patches.permute(1, 0, 2).reshape(patches.shape[1], -1)  # [C_in*kH*kW, B*L]
+        else:
+            if len(inp.shape) == 2:
+                inp = inp.unsqueeze(0)
+            if isinstance(self.layer, nn.Linear) or isinstance(self.layer, transformers.Conv1D):
+                if len(inp.shape) == 3:
+                    inp = inp.reshape((-1, inp.shape[-1]))
+                inp = inp.t()
 
         W_old = self.sum_weight
 
@@ -60,8 +77,17 @@ class OBS_Diff_Structured(object):
 
     # Structured pruning
     def struct_prune(
-        self, sparsity, headsize=1, percdamp=0.0, layer_idx=None, 
+        self, sparsity, headsize=1, percdamp=0.0, layer_idx=None, channel_align=1,
     ):
+        # channel_align: round the number of pruned "heads" (groups of
+        # `headsize` columns -- one full input channel, for conv layers
+        # pruned with headsize=kH*kW) down to a multiple of this value.
+        # Needed when the pruned dimension feeds a GroupNorm whose
+        # num_groups doesn't change on prune (torch_pruning only shrinks
+        # num_channels): remaining channels must stay divisible by
+        # num_groups, so pass channel_align=norm.num_groups when pruning a
+        # conv1/conv2 bottleneck that feeds one. Default 1 = old behavior,
+        # exact match for the existing attention-head / FFN-neuron callers.
         assert self.columns % headsize == 0
 
         tick = time.time()
@@ -88,7 +114,11 @@ class OBS_Diff_Structured(object):
 
         column_mask = torch.zeros(self.columns, dtype=torch.bool, device=self.dev) # 1 for remove
         pruned_columns = column_mask.count_nonzero()
-        target_columns = round(self.columns // headsize * sparsity) * headsize
+        num_heads = self.columns // headsize
+        target_heads = round(num_heads * sparsity)
+        if channel_align > 1:
+            target_heads = (target_heads // channel_align) * channel_align
+        target_columns = target_heads * headsize
 
         if headsize > 1:
             pass

@@ -122,7 +122,11 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
     unet = pipe.unet
     registry = build_block_registry(unet)
 
-    target_modules = ["attn1.to_out.0", "attn2.to_out.0", "ff.net.2"]
+    # "conv2" is the resnet-block anchor: find_layers only returns it for
+    # BlockRef.kind=="resnet" entries, so this list naturally splits across
+    # transformer blocks (attn1/attn2/ff.net.2) and resnet blocks (conv2)
+    # without any extra filtering.
+    target_modules = ["attn1.to_out.0", "attn2.to_out.0", "ff.net.2", "conv2"]
     target_pruned_modules = build_target_pruned_modules(
         unet, target_modules, args.minlayer, args.maxlayer
     )
@@ -147,8 +151,10 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
             all_module_dict = find_layers(block_module)
             module = all_module_dict[module_name]
 
-            # No joint-attn class needed -- attn1/attn2/ff.net.2 all use the
-            # plain per-layer OBS_Diff_Structured independently.
+            # No joint-attn class needed -- attn1/attn2/ff.net.2/conv2 all use
+            # the plain per-layer OBS_Diff_Structured independently. Works
+            # unchanged for conv2 (nn.Conv2d) as long as OBS_Diff_Structured
+            # has the unfold-based add_batch patch -- see module docstring.
             pruner_dict[(block_key, module_name)] = OBS_Diff_Structured(module, block_key, args)
             hook_fn = create_hook_fn(block_key, module_name, pruner_dict, timestep_weight)
             hooks.append(module.register_forward_hook(hook_fn))
@@ -212,6 +218,42 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
 
                 tp.prune_linear_in_channels(target_layer, idx)
                 tp.prune_linear_out_channels(target_layer_in, full_idx)
+
+            elif module_name == "conv2":
+                # block_module IS the ResnetBlock2D itself here (BlockRef.module
+                # for kind=="resnet"), same as block_module is a BasicTransformerBlock
+                # for the attn/ff branches above.
+                resnet = block_module
+                conv1 = get_module_by_name(resnet, "conv1")
+                conv2 = get_module_by_name(resnet, "conv2")
+                norm2 = get_module_by_name(resnet, "norm2")
+                time_emb_proj = get_module_by_name(resnet, "time_emb_proj")
+
+                assert resnet.time_embedding_norm == "default", (
+                    f"[{block_key}] time_embedding_norm='{resnet.time_embedding_norm}' "
+                    f"not supported -- 'scale_shift' chunks temb into (scale, shift) "
+                    f"inside forward(), which needs separate index handling."
+                )
+                num_groups = norm2.num_groups
+                khkw = conv2.kernel_size[0] * conv2.kernel_size[1]
+
+                pruner = pruner_dict[(block_key, module_name)]
+                idx = pruner.struct_prune(
+                    sparsity=sparsity, percdamp=args.percdamp,
+                    headsize=khkw, channel_align=num_groups,
+                )
+                channel_idx = sorted(set((idx // khkw).tolist()))
+
+                if len(channel_idx) == 0:
+                    print(f"[{block_key}] no conv2 channels pruned "
+                          f"(sparsity too low for channel_align={num_groups})")
+                else:
+                    tp.prune_conv_out_channels(conv1, channel_idx)
+                    tp.prune_groupnorm_out_channels(norm2, channel_idx)
+                    tp.prune_linear_out_channels(time_emb_proj, channel_idx)
+                    tp.prune_conv_in_channels(conv2, channel_idx)
+                    print(f"[{block_key}] pruned {len(channel_idx)} internal "
+                          f"channels (num_groups={num_groups})")
 
             else:  # "attn1.to_out.0" or "attn2.to_out.0"
                 attn_name = module_name.split(".")[0]  # "attn1" or "attn2"
