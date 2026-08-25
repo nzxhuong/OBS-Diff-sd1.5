@@ -15,10 +15,12 @@ def get_gcc3m(num_samples):
         print(f"Total number of rows: {len(df)}")
         print(f"Column names: {list(df.columns)}")
 
-        prompts = df['caption'].head(num_samples).tolist()
-        print(f"Extracted {len(prompts)} prompts from GCC3M")
+        captions = df['caption'].head(num_samples).tolist()
+        print(f"Extracted {len(captions)} prompts from GCC3M")
 
-        return prompts
+        # normalized to (prompt, negative) pairs, same shape as get_prompts_txt --
+        # GCC3M captions have no associated negative prompt, so "" throughout
+        return [(c, "") for c in captions]
 
     except FileNotFoundError:
         print(f"Error: File {TSV_FILE_PATH} does not exist.")
@@ -28,27 +30,39 @@ def get_gcc3m(num_samples):
         return []
 
 
-def get_prompts_txt(num_samples, path=TXT_FILE_PATH):
-    """Load calibration prompts from a plain text file, one prompt per line.
-    Used as a substitute for GCC3M when the TSV/image URLs aren't available --
-    OBS-Diff's Hessian only ever consumes the caption text, never the image,
-    so a flat prompt list is a drop-in replacement for calibration purposes."""
+def get_prompts_txt(num_samples, path=TXT_FILE_PATH, delimiter="||"):
+    """Load calibration prompts from a plain text file.
+
+    Each line is either:
+      - just a positive prompt, or
+      - "positive_prompt||negative_prompt" (delimiter configurable)
+
+    Returns a list of (prompt: str, negative_prompt: str) tuples -- negative
+    is "" if the line had no delimiter or an empty right-hand side.
+    """
     try:
         with open(path, 'r', encoding='utf-8') as f:
-            # strip blank lines in case the file has trailing/interspersed empties
-            prompts = [line.strip() for line in f if line.strip()]
+            raw_lines = [line.rstrip('\n') for line in f if line.strip()]
 
         print(f"Successfully read prompts file: {path}")
-        print(f"Total number of prompts available: {len(prompts)}")
+        print(f"Total number of lines available: {len(raw_lines)}")
 
-        prompts = prompts[:num_samples]
-        print(f"Using {len(prompts)} prompts for calibration")
+        pairs = []
+        for line in raw_lines:
+            if delimiter in line:
+                prompt, negative = line.split(delimiter, 1)
+                pairs.append((prompt.strip(), negative.strip()))
+            else:
+                pairs.append((line.strip(), ""))
 
-        if len(prompts) < num_samples:
+        pairs = pairs[:num_samples]
+        print(f"Using {len(pairs)} prompt/negative pairs for calibration")
+
+        if len(pairs) < num_samples:
             print(f"Warning: requested {num_samples} samples but only "
-                  f"{len(prompts)} available in {path}")
+                  f"{len(pairs)} available in {path}")
 
-        return prompts
+        return pairs
 
     except FileNotFoundError:
         print(f"Error: File {path} does not exist.")

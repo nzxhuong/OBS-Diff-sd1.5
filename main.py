@@ -10,6 +10,7 @@ from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', type=str, help='text-to-image model, e.g. SD3')
+    parser.add_argument('--neg_embedding_path', type=str, default=None, help='Path to the negative embedding file.')
     parser.add_argument('--seed', type=int, default=0, help='Seed for sampling the calibration data.')
     parser.add_argument('--sparsity_ratio', type=float, default=0, help='Sparsity level')
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4", "structured"])
@@ -55,7 +56,10 @@ def main():
         torch_dtype=torch.float16
     ).to("cuda")
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, algorithm_type="sde-dpmsolver++", use_karras_sigmas=True)
-
+    pipe.load_textual_inversion(
+        args.neg_embedding_path,
+        token="CyberRealistic_Negative",   
+        )
     pipe.unet.eval()
 
     # if args.minlayer is not None and args.maxlayer is not None:

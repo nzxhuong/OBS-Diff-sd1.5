@@ -157,11 +157,15 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
         batch_size = args.batch_size
         num_batches = (len(dataloader) + batch_size - 1) // batch_size
         for i in range(num_batches):
-            prompts = dataloader[i * batch_size:(i + 1) * batch_size]
+            batch_pairs = dataloader[i * batch_size:(i + 1) * batch_size]
+            prompts, negatives = zip(*batch_pairs)  # unzip (prompt, negative) tuples
+            prompts, negatives = list(prompts), list(negatives)
             print(f"  Prompts {i}: {prompts}")
+            print(f"  Negatives {i}: {negatives}")
             step_info["current"] = 0
             pipe(
                 prompt=prompts,
+                negative_prompt=negatives,
                 height=args.height,
                 width=args.width,
                 num_inference_steps=args.num_inference_steps,
@@ -305,11 +309,15 @@ def prune_OBS_Diff_SD15(args, pipe, dev, prune_n=0, prune_m=0, timestep_weight=N
         batch_size = args.batch_size
         num_batches = (len(dataloader) + batch_size - 1) // batch_size
         for i in range(num_batches):
-            prompts = dataloader[i * batch_size:(i + 1) * batch_size]
+            batch_pairs = dataloader[i * batch_size:(i + 1) * batch_size]
+            prompts, negatives = zip(*batch_pairs)  # unzip (prompt, negative) tuples
+            prompts, negatives = list(prompts), list(negatives)
             print(f"  Prompts {i}: {prompts}")
+            print(f"  Negatives {i}: {negatives}")
             step_info["current"] = 0
             pipe(
                 prompt=prompts,
+                negative_prompt=negatives,
                 height=args.height,
                 width=args.width,
                 num_inference_steps=args.num_inference_steps,
