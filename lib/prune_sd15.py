@@ -1,22 +1,3 @@
-"""
-lib/prune_sd15.py
-
-SD1.5 / Hyper-SD adaptation of prune_OBS_Diff_Structured from lib/prune.py.
-
-Changes vs. the original MMDiT version:
-  1. Uses lib.unet_blocks (build_block_registry / build_target_pruned_modules)
-     instead of flat `pipe.transformer.transformer_blocks[i]` indexing.
-  2. attn1 (self-attn) and attn2 (cross-attn) are pruned independently with
-     the plain (non-joint) OBS_Diff_Structured class -- there's no MMDiT-style
-     shared text stream on SD1.5, so OBS_Diff_Structured_Joint_Attn is unused.
-  3. headsize is read per-block from attn.heads / to_q.out_features instead
-     of hard-coded 64, since head_dim differs across down/mid/up stages.
-  4. Parallel grouping rules are rewritten for SD1.5 module names (used only
-     to batch calibration forward passes -- doesn't affect correctness).
-
-Requires lib/unet_blocks.py from the earlier step.
-"""
-
 import torch
 import torch_pruning as tp
 from collections import defaultdict
@@ -26,22 +7,13 @@ from .OBS_Diff import OBS_Diff
 from .OBS_Diff_Structured import OBS_Diff_Structured
 from .dataloader import get_loaders
 
-# reuse the hook machinery unchanged -- it's architecture-agnostic
 from .prune import create_hook_fn, step_info, callback_on_step_end, get_module_by_name
 
 
-# ---------------------------------------------------------------------------
-# 1. SD1.5 parallel-grouping rules (batches calibration forward passes;
-#    purely an efficiency knob, not required for correctness)
-# ---------------------------------------------------------------------------
 SD15_PARALLEL_SETS = [
     {"attn1.to_q", "attn1.to_k", "attn1.to_v"},
     {"attn2.to_q", "attn2.to_k", "attn2.to_v"},
 ]
-# Note: to_out.0 (attn1/attn2) and ff.net.2 are each their own singleton
-# group below -- they're the Hessian-tracked layers for structured pruning,
-# same role "attn.to_out.0" / "ff.net.2" played in the MMDiT version.
-
 
 def group_modules_with_parallelism_sd15(target_pruned_modules, num_groups):
     """Same shape/contract as the original group_modules_with_parallelism,
@@ -89,9 +61,6 @@ def group_modules_with_parallelism_sd15(target_pruned_modules, num_groups):
     return final_groups
 
 
-# ---------------------------------------------------------------------------
-# 2. head_dim lookup -- replaces the hard-coded headsize=64
-# ---------------------------------------------------------------------------
 def get_attn_head_dim(basic_block, attn_name: str) -> int:
     """attn_name is 'attn1' or 'attn2'. Reads heads/out_features straight off
     the live module so it's correct per down/mid/up stage without guessing."""
@@ -104,9 +73,6 @@ def get_attn_head_dim(basic_block, attn_name: str) -> int:
     return out_features // heads
 
 
-# ---------------------------------------------------------------------------
-# 3. Main driver
-# ---------------------------------------------------------------------------
 @torch.no_grad()
 def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
     """
@@ -122,10 +88,6 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
     unet = pipe.unet
     registry = build_block_registry(unet)
 
-    # "conv2" is the resnet-block anchor: find_layers only returns it for
-    # BlockRef.kind=="resnet" entries, so this list naturally splits across
-    # transformer blocks (attn1/attn2/ff.net.2) and resnet blocks (conv2)
-    # without any extra filtering.
     target_modules = ["attn1.to_out.0", "attn2.to_out.0", "ff.net.2", "conv2"]
     target_pruned_modules = build_target_pruned_modules(
         unet, target_modules, args.minlayer, args.maxlayer
@@ -151,10 +113,6 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
             all_module_dict = find_layers(block_module)
             module = all_module_dict[module_name]
 
-            # No joint-attn class needed -- attn1/attn2/ff.net.2/conv2 all use
-            # the plain per-layer OBS_Diff_Structured independently. Works
-            # unchanged for conv2 (nn.Conv2d) as long as OBS_Diff_Structured
-            # has the unfold-based add_batch patch -- see module docstring.
             pruner_dict[(block_key, module_name)] = OBS_Diff_Structured(module, block_key, args)
             hook_fn = create_hook_fn(block_key, module_name, pruner_dict, timestep_weight)
             hooks.append(module.register_forward_hook(hook_fn))
@@ -164,7 +122,7 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
         num_batches = (len(dataloader) + batch_size - 1) // batch_size
         for i in range(num_batches):
             batch_pairs = dataloader[i * batch_size:(i + 1) * batch_size]
-            prompts, negatives = zip(*batch_pairs)  # unzip (prompt, negative) tuples
+            prompts, negatives = zip(*batch_pairs) 
             prompts, negatives = list(prompts), list(negatives)
             print(f"  Prompts {i}: {prompts}")
             print(f"  Negatives {i}: {negatives}")
@@ -202,14 +160,6 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
                 target_layer_in = get_module_by_name(block_module, "ff.net.0.proj")
                 idx = idx.tolist()
 
-                # GEGLU: ff.net.0.proj outputs concat([hidden, gate]), each of
-                # size inner_dim (out_features == 2*inner_dim), then does
-                # hidden * gelu(gate) via chunk(2). An inner_dim-space pruned
-                # index i must remove BOTH proj output channel i (hidden half)
-                # and i + inner_dim (gate half), or the chunk split misaligns
-                # after pruning. Non-gated activations (e.g. gelu-approximate,
-                # used by SD3's FeedForward) have proj.out_features == inner_dim
-                # and don't need this doubling.
                 proj_out_features = target_layer_in.out_features
                 if proj_out_features == 2 * inner_dim:
                     full_idx = idx + [i + inner_dim for i in idx]
@@ -220,9 +170,6 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
                 tp.prune_linear_out_channels(target_layer_in, full_idx)
 
             elif module_name == "conv2":
-                # block_module IS the ResnetBlock2D itself here (BlockRef.module
-                # for kind=="resnet"), same as block_module is a BasicTransformerBlock
-                # for the attn/ff branches above.
                 resnet = block_module
                 conv1 = get_module_by_name(resnet, "conv1")
                 conv2 = get_module_by_name(resnet, "conv2")
@@ -255,8 +202,8 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
                     print(f"[{block_key}] pruned {len(channel_idx)} internal "
                           f"channels (num_groups={num_groups})")
 
-            else:  # "attn1.to_out.0" or "attn2.to_out.0"
-                attn_name = module_name.split(".")[0]  # "attn1" or "attn2"
+            else: 
+                attn_name = module_name.split(".")[0] 
                 head_dim = get_attn_head_dim(block_module, attn_name)
 
                 idx = pruner_dict[(block_key, module_name)].struct_prune(
@@ -285,15 +232,6 @@ def prune_OBS_Diff_Structured_SD15(args, pipe, dev, timestep_weight=None):
         print(f"Group {g_idx + 1} pruning completed.")
 
 
-# ---------------------------------------------------------------------------
-# 4. Unstructured / N:M pruning driver
-# ---------------------------------------------------------------------------
-# Simpler than the structured path: OBS zeros individual weights in place
-# rather than removing whole channels, so there's no torch_pruning dependency
-# graph, no GEGLU channel-alignment issue, and every target module is
-# Hessian-tracked and pruned directly -- no separate "paired layer" pruned by
-# index propagation. Target modules here are the full set of Linear layers
-# you want sparsified, not just the three structural anchor points.
 SD15_UNSTRUCTURED_TARGETS = [
     "attn1.to_q", "attn1.to_k", "attn1.to_v", "attn1.to_out.0",
     "attn2.to_q", "attn2.to_k", "attn2.to_v", "attn2.to_out.0",
@@ -321,11 +259,6 @@ def prune_OBS_Diff_SD15(args, pipe, dev, prune_n=0, prune_m=0, timestep_weight=N
     print(f"registry has {len(registry)} blocks, "
           f"{len(target_pruned_modules)} target modules found")
 
-    # Grouping here is purely to batch calibration forward passes; unlike the
-    # structured path there's no dependency-linked "paired layer" to worry
-    # about, so grouping by the same SD15_PARALLEL_SETS is fine, or you can
-    # just pass num_pruned_groups == len(target_pruned_modules) for one
-    # module per group if you'd rather keep it simple.
     modules_groups = group_modules_with_parallelism_sd15(
         target_pruned_modules, args.num_pruned_groups
     )

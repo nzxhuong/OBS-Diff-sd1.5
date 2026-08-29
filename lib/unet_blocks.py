@@ -1,23 +1,3 @@
-"""
-UNet block-enumeration helper for adapting OBS-Diff's prune.py to SD1.5 / Hyper-SD.
-
-SD3's transformer exposes a flat, indexable `pipe.transformer.transformer_blocks`
-list, so the original code could just do `blocks[i]` and use an int as the
-dict key everywhere. SD1.5's UNet2DConditionModel has no such flat list --
-prunable modules live inside nested down_blocks / mid_block / up_blocks, and
-some stages have attention (CrossAttnDownBlock2D / CrossAttnUpBlock2D /
-UNetMidBlock2DCrossAttn) while others don't (plain DownBlock2D / UpBlock2D).
-
-This module replaces the "blocks[block_idx]" pattern with:
-  1. enumerate_unet_blocks(unet)  -> ordered list of BlockRef, each with a
-     unique string `key` (e.g. "down_blocks.0.attentions.0.transformer_blocks.0")
-  2. a registry dict {key: nn.Module} you index into instead of `blocks[i]`
-
-Everywhere prune.py did `blocks[block_idx]` you now do `registry[block_key]`.
-Everywhere it used `block_idx` as a dict/print key, a string key works fine
-as a drop-in (dicts don't care whether keys are int or str).
-"""
-
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 import torch.nn as nn
@@ -109,17 +89,6 @@ def build_target_pruned_modules(
     maxlayer: Optional[int] = None,
 ) -> List[tuple]:
     """
-    Drop-in replacement for this block in prune.py:
-
-        blocks = pipe.transformer.transformer_blocks
-        target_pruned_modules = []
-        for i in range(args.minlayer, args.maxlayer):
-            block = blocks[i]
-            all_module_dict = find_layers(block)
-            for name in target_modules:
-                if name in all_module_dict:
-                    target_pruned_modules.append((i, name))
-
     Returns a list of (block_key: str, module_name: str) tuples. block_key is
     now a string path, not an int -- every place downstream that used
     block_idx as a dict key or print value works unchanged, since dicts don't

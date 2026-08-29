@@ -5,3 +5,8 @@ __pycache__
 *.pt
 *.pth
 *.png
+prepare_data.py
+.gitignore
+doc/
+test_*
+sd15_quantize_and_save.py

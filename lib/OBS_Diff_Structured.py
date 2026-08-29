@@ -5,11 +5,6 @@ import torch
 import torch.nn as nn
 import transformers
 
-import matplotlib.pyplot as plt
-import torch_pruning as tp
-import torch_pruning.pruner.function as tfun
-import logging
-
 DEBUG = False 
 
 torch.backends.cuda.matmul.allow_tf32 = False
