@@ -1,5 +1,5 @@
 For calibration, i use random 100 prompts generated with [CyberRealistic Prompt Helper](https://chatgpt.com/g/g-6834133e3ab881918a91b3ec6b9eb01f-cyberrealistic-prompt-helper).
-
+[40% unet checkpoint](https://huggingface.co/NZUONG/OBS-Diff-CyberRealistic-SD1.5)
 
 <div align="center">
 <p align="center">
