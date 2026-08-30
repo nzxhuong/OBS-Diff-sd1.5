@@ -1,6 +1,14 @@
 For calibration, i use random 100 prompts generated with [CyberRealistic Prompt Helper](https://chatgpt.com/g/g-6834133e3ab881918a91b3ec6b9eb01f-cyberrealistic-prompt-helper).
 [40% unet checkpoint](https://huggingface.co/NZUONG/OBS-Diff-CyberRealistic-SD1.5)
 
+### Benchmark (768x512, 30 steps)
+ 
+| Metric | Original UNet | Pruned UNet |
+| :--- | :---: | :---: |
+| Parameters | 859,520,964 | 559,206,852 (-34.9%) |
+| Model weights VRAM | 1639.4 MiB | 1066.6 MiB |
+| Inference speed | 5.73 it/s | 8.55 it/s |
+
 <div align="center">
 <p align="center">
   <img src="figures/obs-diff-logo.jpg" alt="OBS-Diff Logo" width="30%">
