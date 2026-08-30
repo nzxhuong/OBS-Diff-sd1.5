@@ -1,4 +1,4 @@
-For calibration, we use the first 100 prompts from GCC3M.
+For calibration, i use random 100 prompts generated with [CyberRealistic Prompt Helper](https://chatgpt.com/g/g-6834133e3ab881918a91b3ec6b9eb01f-cyberrealistic-prompt-helper).
 
 
 <div align="center">
